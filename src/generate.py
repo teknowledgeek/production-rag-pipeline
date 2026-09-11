@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # Which LLM provider to use — "anthropic" or "openai"
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 OPENAI_MODEL = "gpt-4o-mini"
 
@@ -111,6 +111,8 @@ def generate_answer(question: str, chunks: list[RetrievedChunk]) -> GenerationRe
         answer = call_anthropic(SYSTEM_PROMPT, user_prompt)
     elif LLM_PROVIDER == "openai":
         answer = call_openai(SYSTEM_PROMPT, user_prompt)
+    elif LLM_PROVIDER == "groq":
+        answer = call_groq(SYSTEM_PROMPT, user_prompt)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}. Use 'anthropic' or 'openai'.")
 
@@ -125,6 +127,25 @@ def answer_question(question: str, retriever: HybridRetriever, top_k: int = 5) -
     """Convenience wrapper: retrieve + generate in one call. Used by api.py."""
     chunks = retriever.retrieve(question, top_k=top_k)
     return generate_answer(question, chunks)
+
+def call_groq(system_prompt: str, user_prompt: str) -> str:
+    from openai import OpenAI
+
+    client = OpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=os.getenv("GROQ_API_KEY"),
+    )
+    # for m in client.models.list().data:
+        # print(m.id)
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=1000,
+    )
+    return response.choices[0].message.content
 
 
 def main():
