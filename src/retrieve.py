@@ -27,6 +27,13 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 COLLECTION_NAME = "rag_docs"
 
+
+# Re-ranking adds real retrieval quality but also loads a second transformer
+# model into memory. On memory-constrained deployments (e.g. Render's free
+# 512MB tier), set ENABLE_RERANKING=false to skip loading it entirely.
+# This is a deliberate, documented trade-off — see README for eval comparison.
+ENABLE_RERANKING = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
+
 # How many candidates each retrieval method pulls before fusion/re-ranking.
 # Wider than final top_k so re-ranking has real signal to work with.
 CANDIDATE_POOL_SIZE = 20
@@ -64,8 +71,12 @@ class HybridRetriever:
         logger.info(f"Loading embedding model: {embedding_model}")
         self.embedder = SentenceTransformer(embedding_model)
 
-        logger.info(f"Loading re-ranker: {reranker_model}")
-        self.reranker = CrossEncoder(reranker_model)
+        if ENABLE_RERANKING:
+            logger.info(f"Loading re-ranker: {reranker_model}")
+            self.reranker = CrossEncoder(reranker_model)
+        else:
+            logger.info("Re-ranking disabled (ENABLE_RERANKING=false) — skipping reranker load to save memory")
+            self.reranker = None
 
         url = os.getenv("QDRANT_URL", "http://localhost:6333")
         api_key = os.getenv("QDRANT_API_KEY")
@@ -132,9 +143,24 @@ class HybridRetriever:
         return [chunk_lookup[k] for k in ranked_keys]
 
     def _rerank(self, query: str, candidates: list[dict], top_k: int) -> list[RetrievedChunk]:
-        """Re-score the fused candidate pool with a cross-encoder for final ranking."""
+        """
+        Re-score the fused candidate pool with a cross-encoder for final ranking.
+        If reranking is disabled, falls back to the fused (RRF) order as-is —
+        still a real hybrid result, just without the cross-encoder's extra precision.
+        """
         if not candidates:
             return []
+
+        if self.reranker is None:
+            return [
+                RetrievedChunk(
+                    text=c["text"],
+                    source=c["source"],
+                    page=c.get("page"),
+                    score=c.get("score", 0.0),
+                )
+                for c in candidates[:top_k]
+            ]
 
         pairs = [[query, c["text"]] for c in candidates]
         scores = self.reranker.predict(pairs)
