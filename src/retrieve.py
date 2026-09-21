@@ -1,5 +1,10 @@
 """
-retrieve.py — Hybrid retrieval (dense + BM25) with cross-encoder re-ranking.
+retrieve.py — Hybrid retrieval (dense + BM25) with optional cross-encoder re-ranking.
+
+Embedding backend is switchable via EMBEDDING_BACKEND env var — see embed.py
+for details on "fastembed" (lightweight, default) vs "sentence-transformers"
+(full PyTorch). Both files must use the SAME backend that was used to build
+the Qdrant index, since vector spaces from different models aren't compatible.
 
 Usage (standalone test):
     python -m src.retrieve --query "your question here" --top-k 5
@@ -15,28 +20,27 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
+
+from src.embed import EmbeddingModel, EMBEDDING_BACKEND
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 COLLECTION_NAME = "rag_docs"
 
-
-# Re-ranking adds real retrieval quality but also loads a second transformer
-# model into memory. On memory-constrained deployments (e.g. Render's free
-# 512MB tier), set ENABLE_RERANKING=false to skip loading it entirely.
-# This is a deliberate, documented trade-off — see README for eval comparison.
-ENABLE_RERANKING = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
-
 # How many candidates each retrieval method pulls before fusion/re-ranking.
-# Wider than final top_k so re-ranking has real signal to work with.
 CANDIDATE_POOL_SIZE = 20
+
+# Re-ranking adds real retrieval quality but loads a second transformer model
+# (only available via sentence-transformers/PyTorch — fastembed doesn't
+# provide a cross-encoder). On memory-constrained deployments, set
+# ENABLE_RERANKING=false to skip loading it entirely. Documented trade-off —
+# see README for eval comparison with/without re-ranking.
+ENABLE_RERANKING = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
 
 
 @dataclass
@@ -50,14 +54,15 @@ class RetrievedChunk:
 class HybridRetriever:
     """
     Combines dense vector search (Qdrant) with sparse BM25 keyword search,
-    fuses the results, and re-ranks the merged pool with a cross-encoder.
+    fuses the results, and optionally re-ranks the merged pool with a
+    cross-encoder.
     """
 
     def __init__(
         self,
         chunks_path: str = "./data/chunks.json",
         collection_name: str = COLLECTION_NAME,
-        embedding_model: str = EMBEDDING_MODEL,
+        embedding_backend: str = EMBEDDING_BACKEND,
         reranker_model: str = RERANKER_MODEL,
     ):
         logger.info("Loading chunks for BM25 index...")
@@ -68,10 +73,13 @@ class HybridRetriever:
         tokenized_corpus = [c["text"].lower().split() for c in self.chunks]
         self.bm25 = BM25Okapi(tokenized_corpus)
 
-        logger.info(f"Loading embedding model: {embedding_model}")
-        self.embedder = SentenceTransformer(embedding_model)
+        # Shared embedding wrapper — same backend/model used for indexing (embed.py)
+        self.embedder = EmbeddingModel(backend=embedding_backend)
 
+        # Cross-encoder re-ranking requires sentence-transformers regardless of
+        # which backend embeds the query/corpus — fastembed has no cross-encoder.
         if ENABLE_RERANKING:
+            from sentence_transformers import CrossEncoder
             logger.info(f"Loading re-ranker: {reranker_model}")
             self.reranker = CrossEncoder(reranker_model)
         else:
@@ -83,11 +91,11 @@ class HybridRetriever:
         self.qdrant = QdrantClient(url=url, api_key=api_key)
         self.collection_name = collection_name
 
-        logger.info("HybridRetriever ready.")
+        logger.info(f"HybridRetriever ready (embedding_backend={embedding_backend}, reranking={ENABLE_RERANKING}).")
 
     def _dense_search(self, query: str, k: int) -> list[dict]:
         """Vector similarity search against Qdrant."""
-        query_vector = self.embedder.encode(query, normalize_embeddings=True).tolist()
+        query_vector = self.embedder.encode([query])[0]
         results = self.qdrant.query_points(
             collection_name=self.collection_name,
             query=query_vector,
@@ -179,7 +187,7 @@ class HybridRetriever:
         ]
 
     def retrieve(self, query: str, top_k: int = 5) -> list[RetrievedChunk]:
-        """Full pipeline: dense + sparse retrieval → fusion → cross-encoder re-rank."""
+        """Full pipeline: dense + sparse retrieval → fusion → optional re-rank."""
         dense_results = self._dense_search(query, CANDIDATE_POOL_SIZE)
         sparse_results = self._bm25_search(query, CANDIDATE_POOL_SIZE)
 
@@ -188,7 +196,7 @@ class HybridRetriever:
 
         logger.info(
             f"Retrieved {len(dense_results)} dense + {len(sparse_results)} sparse "
-            f"→ fused to {len(fused)} → re-ranked to top {len(reranked)}"
+            f"→ fused to {len(fused)} → final top {len(reranked)}"
         )
         return reranked
 
