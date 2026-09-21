@@ -35,8 +35,6 @@ This project builds a RAG pipeline the way I'd want to hand it off to a team: wi
                                                                     
 ```
 
-*(Replace with an actual diagram — Excalidraw or draw.io export — once finalized.)*
-
 ## Key design decisions
 
 | Decision | Choice | Why |
@@ -60,17 +58,6 @@ This project was deployed, broke, and was fixed — documented honestly rather t
 
 This is documented here deliberately: understanding *why* something didn't fit a resource constraint, and fixing the actual bottleneck rather than just paying for more RAM, is the kind of decision this README is meant to make visible.
 
-## Results
-
-| Metric | Baseline (naive top-k) | Hybrid + re-ranking (local) | Hybrid, no re-ranking (deployed) |
-|---|---|---|---|
-| Context precision | — | — | — |
-| Context recall | — | — | — |
-| Answer faithfulness | — | — | — |
-| Avg. latency | — | — | — |
-| Peak memory (approx.) | — | — | — |
-
-*(Populate once the RAGAS eval suite is running — the three-column comparison, including the deployed/no-rerank column, is the most direct evidence of the deployment trade-off's actual cost.)*
 
 ## Tech stack
 
